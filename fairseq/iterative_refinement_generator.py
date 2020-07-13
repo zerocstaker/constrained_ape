@@ -131,7 +131,10 @@ class IterativeRefinementGenerator(object):
 
         # initialize
         encoder_out = model.forward_encoder([src_tokens, src_lengths])
-        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens)
+        init_tokens = None
+        if self.init_tokens is not None:
+            init_tokens = sample[self.init_tokens]
+        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens,init_tokens=init_tokens)
 
         if self.beam_size > 1:
             assert model.allow_length_beam, \

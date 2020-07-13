@@ -250,10 +250,13 @@ class LevenshteinTransformerModel(FairseqNATModel):
             history=history
         )
 
-    def initialize_output_tokens(self, encoder_out, src_tokens):
-        initial_output_tokens = src_tokens.new_zeros(src_tokens.size(0), 2)
-        initial_output_tokens[:, 0] = self.bos
-        initial_output_tokens[:, 1] = self.eos
+    def initialize_output_tokens(self, encoder_out, src_tokens, init_tokens=None):
+        if init_tokens is not None:
+            initial_output_tokens = init_tokens
+        else:
+            initial_output_tokens = src_tokens.new_zeros(src_tokens.size(0), 2)
+            initial_output_tokens[:, 0] = self.bos
+            initial_output_tokens[:, 1] = self.eos
 
         initial_output_scores = initial_output_tokens.new_zeros(
             *initial_output_tokens.size()
