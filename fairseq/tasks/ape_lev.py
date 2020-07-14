@@ -30,23 +30,53 @@ def load_ape_dataset(
     max_target_positions, prepend_bos=False, load_alignments=False,
     truncate_source=False, append_source_id=False,
     num_buckets=0,
-    mt_as_output=False,
+    src_type="src",
 ):
     """
     ignoring src and tgt name. Assume $split.src, $split.mt, and $split.pe exist
     """
-    src = "src"
+    src = src_type
     mt = "mt"
     tgt = "pe"
+    term = "term"
+    src_factor = src_type + "_embed"
 
     def split_exists(split, lang, data_path):
         filename = os.path.join(data_path, '{}.{}'.format(split, lang))
         return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
 
-    src_datasets = []
-    mt_datasets = []
-    tgt_datasets = []
+    def load_dataset(lang, lang_dict, prefix, dataset_length, sample_ratios=None):
+        """
+        Function to load additional dataset and deal with all parameters.
+        Easier than copying redudant code for each dataset.
+        Requires src_dataset to provide the length and sample_ratios.
+        """
+        lang_datasets = []
+        lang_dataset = data_utils.load_indexed_dataset(prefix + lang, lang_dict, dataset_impl)
+        if lang_dataset is not None:
+            lang_datasets.append(lang_dataset)
+        assert dataset_length == len(lang_datasets) or len(lang_datasets) == 0
+        if dataset_length == 1:
+            lang_dataset = lang_datasets[0] if len(lang_datasets) > 0 else None
+        else:
+            assert sample_ratios is not None
+            if len(lang_datasets) > 0:
+                lang_dataset = ConcatDataset(lang_datasets, sample_ratios)
+            else:
+                lang_dataset = None
+        if prepend_bos:
+            assert hasattr(src_dict, "bos_index") and hasattr(lang_dict, "bos_index")
+            if lang_dataset is not None:
+                lang_dataset = PrependTokenDataset(lang_dataset, lang_dict.bos())
+        eos = None
+        if append_source_id:
+            if lang_dataset is not None:
+                lang_dataset = AppendTokenDataset(lang_dataset, lang_dict.index('[{}]'.format(lang)))
 
+        lang_dataset_sizes = lang_dataset.sizes if lang_dataset is not None else None
+        return lang_dataset, lang_dataset_sizes
+
+    src_datasets = []
     for k in itertools.count():
         split_k = split + (str(k) if k > 0 else '')
 
@@ -56,6 +86,10 @@ def load_ape_dataset(
         elif split_exists(split_k, mt, data_path):
             prefix = os.path.join(data_path, '{}.'.format(split_k))
         elif split_exists(split_k, tgt, data_path):
+            prefix = os.path.join(data_path, '{}.'.format(split_k))
+        elif split_exists(split_k, term, data_path):
+            prefix = os.path.join(data_path, '{}.'.format(split_k))
+        elif split_exists(split_k, src_factor, data_path):
             prefix = os.path.join(data_path, '{}.'.format(split_k))
         else:
             if k > 0:
@@ -74,75 +108,48 @@ def load_ape_dataset(
             )
         src_datasets.append(src_dataset)
 
-        tgt_dataset = data_utils.load_indexed_dataset(prefix + tgt, tgt_dict, dataset_impl)
-        if tgt_dataset is not None:
-            tgt_datasets.append(tgt_dataset)
-
-        mt_dataset = data_utils.load_indexed_dataset(prefix + mt, tgt_dict, dataset_impl)
-        if mt_dataset is not None:
-            mt_datasets.append(mt_dataset)
-
-        logger.info('{} {} {} examples'.format(
-            data_path, split_k, len(src_datasets[-1])
-        ))
-
         if not combine:
             break
 
-    assert len(src_datasets) == len(tgt_datasets) or len(tgt_datasets) == 0
-
-    if len(mt_datasets) != 0:
-        assert len(src_datasets) == len(mt_datasets)
-
+    dataset_length = len(src_datasets)
+    sample_ratios = None
     if len(src_datasets) == 1:
         src_dataset = src_datasets[0]
-        tgt_dataset = tgt_datasets[0] if len(tgt_datasets) > 0 else None
-        mt_dataset = mt_datasets[0] if len(mt_datasets) > 0 else None
     else:
         sample_ratios = [1] * len(src_datasets)
         sample_ratios[0] = upsample_primary
         src_dataset = ConcatDataset(src_datasets, sample_ratios)
-        if len(tgt_datasets) > 0:
-            tgt_dataset = ConcatDataset(tgt_datasets, sample_ratios)
-        else:
-            tgt_dataset = None
-        if len(mt_datasets) > 0:
-            mt_dataset = ConcatDataset(mt_datasets, sample_ratios)
-        else:
-            mt_dataset = None
 
     if prepend_bos:
         assert hasattr(src_dict, "bos_index") and hasattr(tgt_dict, "bos_index")
         src_dataset = PrependTokenDataset(src_dataset, src_dict.bos())
-        if tgt_dataset is not None:
-            tgt_dataset = PrependTokenDataset(tgt_dataset, tgt_dict.bos())
-        if mt_dataset is not None:
-            mt_dataset = PrependTokenDataset(mt_dataset, tgt_dict.bos())
 
     eos = None
     if append_source_id:
         src_dataset = AppendTokenDataset(src_dataset, src_dict.index('[{}]'.format(src)))
-        if tgt_dataset is not None:
-            tgt_dataset = AppendTokenDataset(tgt_dataset, tgt_dict.index('[{}]'.format(tgt)))
-        if mt_dataset is not None:
-            mt_dataset = AppendTokenDataset(mt_dataset, tgt_dict.index('[{}]'.format(tgt)))
         eos = tgt_dict.index('[{}]'.format(tgt))
 
-    # ignoring align_dataset
     align_dataset = None
 
-    tgt_dataset_sizes = tgt_dataset.sizes if tgt_dataset is not None else None
-    mt_dataset_sizes = mt_dataset.sizes if mt_dataset is not None else None
+    mt_dataset, mt_dataset_sizes = load_dataset(mt, tgt_dict, prefix, dataset_length, sample_ratios=sample_ratios)
+    tgt_dataset, tgt_dataset_sizes = load_dataset(tgt, tgt_dict, prefix, dataset_length, sample_ratios=sample_ratios)
+    term_dataset, term_dataset_sizes = load_dataset(term, tgt_dict, prefix, dataset_length, sample_ratios=sample_ratios)
+    src_factor_dataset, src_factor_dataset_sizes = load_dataset(src_factor, tgt_dict, prefix, dataset_length, sample_ratios=sample_ratios)
+
+    logger.info('{} {} {} examples'.format(
+        data_path, split_k, len(src_datasets[-1])
+    ))
 
     return APEDataset(
         src_dataset, src_dataset.sizes, src_dict,
         tgt_dataset, tgt_dataset_sizes, tgt_dict,
         mt_dataset, mt_dataset_sizes,
+        term_dataset, term_dataset_sizes,
+        src_factor_dataset, src_factor_dataset_sizes,
         left_pad_source=left_pad_source,
         left_pad_target=left_pad_target,
         align_dataset=align_dataset, eos=eos,
         num_buckets=num_buckets,
-        mt_as_output=mt_as_output,
     )
 
 
@@ -178,7 +185,6 @@ class APELevenshteinTask(TranslationLevenshteinTask):
             max_source_positions=self.args.max_source_positions,
             max_target_positions=self.args.max_target_positions,
             prepend_bos=True,
-            mt_as_output=self.args.mt_as_output,
         )
 
     def build_generator(self, models, args):

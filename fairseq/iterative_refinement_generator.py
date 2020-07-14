@@ -35,6 +35,7 @@ class IterativeRefinementGenerator(object):
         adaptive=True,
         retain_history=False,
         reranking=False,
+        init_tokens=None
     ):
         """
         Generates translations based on iterative refinement.
@@ -63,6 +64,7 @@ class IterativeRefinementGenerator(object):
         self.retain_history = retain_history
         self.adaptive = adaptive
         self.models = models
+        self.init_tokens = init_tokens
 
     def generate_batched_itr(
         self,

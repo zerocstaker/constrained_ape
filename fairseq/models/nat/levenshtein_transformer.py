@@ -80,6 +80,11 @@ class LevenshteinTransformerModel(FairseqNATModel):
 
         assert tgt_tokens is not None, "forward function only supports training."
 
+        # fill pad when initiaze with mt that is longer than pe
+        if prev_output_tokens.size(1) > tgt_tokens.size(1):
+            pads = tgt_tokens.new_full((tgt_tokens.size(0),prev_output_tokens.size(1) - tgt_tokens.size(1)),self.pad)
+            tgt_tokens = torch.cat([tgt_tokens,pads],1)
+
         # encoding
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
 

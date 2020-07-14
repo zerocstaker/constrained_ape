@@ -15,7 +15,6 @@ def collate(
     left_pad_source=True,
     left_pad_target=False,
     input_feeding=True,
-    mt_as_output=False,
 ):
     if len(samples) == 0:
         return {}
@@ -25,28 +24,6 @@ def collate(
             [s[key] for s in samples],
             pad_idx, eos_idx, left_pad, move_eos_to_beginning,
         )
-
-    def check_alignment(alignment, src_len, tgt_len):
-        if alignment is None or len(alignment) == 0:
-            return False
-        if alignment[:, 0].max().item() >= src_len - 1 or alignment[:, 1].max().item() >= tgt_len - 1:
-            logger.warning("alignment size mismatch found, skipping alignment!")
-            return False
-        return True
-
-    def compute_alignment_weights(alignments):
-        """
-        Given a tensor of shape [:, 2] containing the source-target indices
-        corresponding to the alignments, a weight vector containing the
-        inverse frequency of each target index is computed.
-        For e.g. if alignments = [[5, 7], [2, 3], [1, 3], [4, 2]], then
-        a tensor containing [1., 0.5, 0.5, 1] should be returned (since target
-        index 3 is repeated twice)
-        """
-        align_tgt = alignments[:, 1]
-        _, align_tgt_i, align_tgt_c = torch.unique(align_tgt, return_inverse=True, return_counts=True)
-        align_weights = align_tgt_c[align_tgt_i[np.arange(len(align_tgt))]]
-        return 1. / align_weights.float()
 
     id = torch.LongTensor([s['id'] for s in samples])
     src_tokens = merge('source', left_pad=left_pad_source)
@@ -88,6 +65,22 @@ def collate(
             s['mt'].ne(pad_idx).long().sum() for s in samples
         ]).index_select(0, sort_order)
 
+    term = None
+    if samples[0].get('term', None) is not None:
+        term = merge('term', left_pad=left_pad_target)
+        term = term.index_select(0, sort_order)
+        term_lengths = torch.LongTensor([
+            s['term'].ne(pad_idx).long().sum() for s in samples
+        ]).index_select(0, sort_order)
+
+    src_factor = None
+    if samples[0].get('src_factor', None) is not None:
+        src_factor = merge('src_factor', left_pad=left_pad_target)
+        src_factor = src_factor.index_select(0, sort_order)
+        src_factor_lengths = torch.LongTensor([
+            s['src_factor'].ne(pad_idx).long().sum() for s in samples
+        ]).index_select(0, sort_order)
+
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -105,6 +98,10 @@ def collate(
 
     if mt is not None:
         batch['mt'] = mt
+    if term is not None:
+        batch['term'] = term
+    if src_factor is not None:
+        batch['net_input']['src_factor'] = src_factor
 
     return batch
 
@@ -113,13 +110,14 @@ class APEDataset(LanguagePairDataset):
         self, src, src_sizes, src_dict,
         tgt=None, tgt_sizes=None, tgt_dict=None,
         mt=None, mt_sizes=None,
+        term=None, term_sizes=None,
+        src_factor=None, src_factor_sizes=None,
         left_pad_source=True, left_pad_target=False,
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
         align_dataset=None,
         append_bos=False, eos=None,
-        num_buckets=0,
-        mt_as_output = False
+        num_buckets=0
     ):
         """
         Add mt to LanguagePairDataset
@@ -139,6 +137,10 @@ class APEDataset(LanguagePairDataset):
         )
         self.mt = mt
         self.mt_sizes = np.array(mt_sizes) if mt_sizes is not None else None
+        self.term = term
+        self.term_sizes = np.array(term_sizes) if term_sizes is not None else None
+        self.src_factor = src_factor
+        self.src_factor_sizes = np.array(src_factor_sizes) if src_factor_sizes is not None else None
 
         if num_buckets > 0:
             from fairseq.data import BucketPadLengthDataset
@@ -150,8 +152,30 @@ class APEDataset(LanguagePairDataset):
                     pad_idx=self.tgt_dict.pad(),
                     left_pad=self.left_pad_target,
                 )
-                self.mt_sizes = self.tgt.mt_sizes
+                self.mt_sizes = self.mt.sizes
                 logger.info('bucketing mt lengths: {}'.format(list(self.mt.buckets)))
+
+            if self.term is not None:
+                self.term = BucketPadLengthDataset(
+                    self.term,
+                    sizes=self.term_sizes,
+                    num_buckets=num_buckets,
+                    pad_idx=self.tgt_dict.pad(),
+                    left_pad=self.left_pad_target,
+                )
+                self.term_sizes = self.term.sizes
+                logger.info('bucketing term lengths: {}'.format(list(self.term.buckets)))
+
+            if self.src_factor is not None:
+                self.src_factor = BucketPadLengthDataset(
+                    self.src_factor,
+                    sizes=self.src_factor_sizes,
+                    num_buckets=num_buckets,
+                    pad_idx=self.tgt_dict.pad(),
+                    left_pad=self.left_pad_target,
+                )
+                self.src_factor_sizes = self.src_factor.sizes
+                logger.info('bucketing src_factor lengths: {}'.format(list(self.src_factor.buckets)))
 
     def get_batch_shapes(self):
         return self.buckets
@@ -160,6 +184,8 @@ class APEDataset(LanguagePairDataset):
         example = super().__getitem__(index)
 
         mt_item = self.mt[index] if self.mt is not None else None
+        term_item = self.term[index] if self.term is not None else None
+        src_factor_item = self.src_factor[index] if self.src_factor is not None else None
 
         # Append EOS to end of tgt sentence if it does not have an EOS and remove
         # EOS from end of src sentence if it exists. This is useful when we use
@@ -169,44 +195,28 @@ class APEDataset(LanguagePairDataset):
             eos = self.tgt_dict.eos() if self.tgt_dict else self.src_dict.eos()
             if self.mt and self.mt[index][-1] != eos:
                 mt_item = torch.cat([self.mt[index], torch.LongTensor([eos])])
+            if self.term and self.term[index][-1] != eos:
+                term_item = torch.cat([self.term[index], torch.LongTensor([eos])])
+            if self.src_factor and self.src_factor[index][-1] != eos:
+                src_factor_item = torch.cat([self.src_factor[index], torch.LongTensor([eos])])
 
         if self.append_bos:
             bos = self.tgt_dict.bos() if self.tgt_dict else self.src_dict.bos()
             if self.mt and self.mt[index][0] != bos:
                 mt_item = torch.cat([torch.LongTensor([bos]), self.mt[index]])
+            if self.term and self.term[index][0] != bos:
+                term_item = torch.cat([torch.LongTensor([bos]), self.term[index]])
+            if self.src_factor and self.src_factor[index][0] != bos:
+                src_factor_item = torch.cat([torch.LongTensor([bos]), self.src_factor[index]])
 
         example["mt"] = mt_item
+        example["term"] = term_item
+        example["src_factor"] = src_factor_item
+
         return example
 
     def collater(self, samples):
-        """Merge a list of samples to form a mini-batch.
-
-        Args:
-            samples (List[dict]): samples to collate
-
-        Returns:
-            dict: a mini-batch with the following keys:
-
-                - `id` (LongTensor): example IDs in the original input order
-                - `ntokens` (int): total number of tokens in the batch
-                - `net_input` (dict): the input to the Model, containing keys:
-
-                  - `src_tokens` (LongTensor): a padded 2D Tensor of tokens in
-                    the source sentence of shape `(bsz, src_len)`. Padding will
-                    appear on the left if *left_pad_source* is ``True``.
-                  - `src_lengths` (LongTensor): 1D Tensor of the unpadded
-                    lengths of each source sentence of shape `(bsz)`
-                  - `prev_output_tokens` (LongTensor): a padded 2D Tensor of
-                    tokens in the target sentence, shifted right by one
-                    position for teacher forcing, of shape `(bsz, tgt_len)`.
-                    This key will not be present if *input_feeding* is
-                    ``False``.  Padding will appear on the left if
-                    *left_pad_target* is ``True``.
-
-                - `target` (LongTensor): a padded 2D Tensor of tokens in the
-                  target sentence of shape `(bsz, tgt_len)`. Padding will appear
-                  on the left if *left_pad_target* is ``True``.
-        """
+        """Merge a list of samples to form a mini-batch."""
         return collate(
             samples,
             pad_idx=self.src_dict.pad(),
@@ -222,7 +232,9 @@ class APEDataset(LanguagePairDataset):
         return max(
             self.src_sizes[index],
             self.tgt_sizes[index] if self.tgt_sizes is not None else 0,
-            self.mt_sizes[index] if self.mt_sizes is not None else 0
+            self.mt_sizes[index] if self.mt_sizes is not None else 0,
+            self.term_sizes[index] if self.term_sizes is not None else 0,
+            self.src_factor_sizes[index] if self.src_factor_sizes is not None else 0
         )
 
     def size(self, index):
@@ -232,6 +244,8 @@ class APEDataset(LanguagePairDataset):
             self.src_sizes[index],
             self.tgt_sizes[index] if self.tgt_sizes is not None else 0,
             self.mt_sizes[index] if self.mt_sizes is not None else 0,
+            self.term_sizes[index] if self.term_sizes is not None else 0,
+            self.src_factor_sizes[index] if self.src_factor_sizes is not None else 0,
         )
 
     def ordered_indices(self):
@@ -251,6 +265,14 @@ class APEDataset(LanguagePairDataset):
                 indices = indices[
                     np.argsort(self.mt_sizes[indices], kind='mergesort')
                 ]
+            if self.term_sizes is not None:
+                indices = indices[
+                    np.argsort(self.term_sizes[indices], kind='mergesort')
+                ]
+            if self.src_factor_sizes is not None:
+                indices = indices[
+                    np.argsort(self.src_factor_sizes[indices], kind='mergesort')
+                ]
             return indices[np.argsort(self.src_sizes[indices], kind='mergesort')]
         else:
             # sort by bucketed_num_tokens, which is:
@@ -265,6 +287,8 @@ class APEDataset(LanguagePairDataset):
             getattr(self.src, 'supports_prefetch', False)
             and (getattr(self.tgt, 'supports_prefetch', False) or self.tgt is None)
             and (getattr(self.mt, 'supports_prefetch', False) or self.mt is None)
+            and (getattr(self.term, 'supports_prefetch', False) or self.mt is None)
+            and (getattr(self.src_factor, 'supports_prefetch', False) or self.mt is None)
         )
 
     def prefetch(self, indices):
@@ -273,3 +297,7 @@ class APEDataset(LanguagePairDataset):
             self.tgt.prefetch(indices)
         if self.mt is not None:
             self.mt.prefetch(indices)
+        if self.term is not None:
+            self.term.prefetch(indices)
+        if self.src_factor is not None:
+            self.src_factor.prefetch(indices)
