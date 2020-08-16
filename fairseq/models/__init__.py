@@ -22,6 +22,8 @@ from .fairseq_model import (
 from .composite_encoder import CompositeEncoder
 from .distributed_fairseq_model import DistributedFairseqModel
 
+from .multisource_encoder import MultisourceEncoder
+from .src_factor_encoder import SrcFactorEncoder
 
 MODEL_REGISTRY = {}
 ARCH_MODEL_REGISTRY = {}

@@ -132,7 +132,8 @@ class IterativeRefinementGenerator(object):
         bsz, src_len = src_tokens.size()
 
         # initialize
-        encoder_out = model.forward_encoder([src_tokens, src_lengths])
+        #encoder_out = model.forward_encoder([src_tokens, src_lengths])
+        encoder_out = model.forward_encoder([sample['net_input'][inp] for inp in sample['net_input'] if inp != "prev_output_tokens"])
         init_tokens = None
         if self.init_tokens is not None:
             init_tokens = sample[self.init_tokens]
