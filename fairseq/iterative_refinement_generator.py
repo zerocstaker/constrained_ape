@@ -11,14 +11,10 @@ import numpy as np
 from fairseq import utils
 
 
-DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
-    'output_tokens',
-    'output_scores',
-    'attn',
-    'step',
-    'max_step',
-    'history'
-])
+DecoderOut = namedtuple(
+    "IterativeRefinementDecoderOut",
+    ["output_tokens", "output_scores", "attn", "step", "max_step", "history"],
+)
 
 
 class IterativeRefinementGenerator(object):
@@ -35,7 +31,7 @@ class IterativeRefinementGenerator(object):
         adaptive=True,
         retain_history=False,
         reranking=False,
-        init_tokens=None
+        init_tokens=None,
     ):
         """
         Generates translations based on iterative refinement.
@@ -105,7 +101,6 @@ class IterativeRefinementGenerator(object):
                 ref = utils.strip_pad(sample["target"][i, :], self.pad)
                 yield id, src, ref, hypos[i]
 
-
     @torch.no_grad()
     def generate(self, models, sample, prefix_tokens=None):
 
@@ -117,13 +112,17 @@ class IterativeRefinementGenerator(object):
         model, reranker = models[0], None
         if self.reranking:
             assert len(models) > 1, "Assuming the last checkpoint is the reranker"
-            assert self.beam_size > 1, "Reranking requires multiple translation for each example"
+            assert (
+                self.beam_size > 1
+            ), "Reranking requires multiple translation for each example"
 
             reranker = models[-1]
             models = models[:-1]
 
-        if len(models) > 1 and hasattr(model, 'enable_ensemble'):
-            assert model.allow_ensemble, "{} does not support ensembling".format(model.__class__.__name__)
+        if len(models) > 1 and hasattr(model, "enable_ensemble"):
+            assert model.allow_ensemble, "{} does not support ensembling".format(
+                model.__class__.__name__
+            )
             model.enable_ensemble(models)
 
         # TODO: better encoder inputs?
@@ -132,21 +131,38 @@ class IterativeRefinementGenerator(object):
         bsz, src_len = src_tokens.size()
 
         # initialize
-        #encoder_out = model.forward_encoder([src_tokens, src_lengths])
-        encoder_out = model.forward_encoder([sample['net_input'][inp] for inp in sample['net_input'] if inp != "prev_output_tokens"])
+        # encoder_out = model.forward_encoder([src_tokens, src_lengths])
+        encoder_out = model.forward_encoder(
+            [
+                sample["net_input"][inp]
+                for inp in sample["net_input"]
+                if inp != "prev_output_tokens"
+            ]
+        )
         init_tokens = None
         if self.init_tokens is not None:
             init_tokens = sample[self.init_tokens]
-        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens,init_tokens=init_tokens)
+        prev_decoder_out = model.initialize_output_tokens(
+            encoder_out, src_tokens, init_tokens=init_tokens
+        )
 
         if self.beam_size > 1:
-            assert model.allow_length_beam, \
-                "{} does not support decoding with length beam.".format(model.__class__.__name__)
+            assert (
+                model.allow_length_beam
+            ), "{} does not support decoding with length beam.".format(
+                model.__class__.__name__
+            )
 
             # regenerate data based on length-beam
-            length_beam_order = utils.new_arange(src_tokens, self.beam_size, bsz).t().reshape(-1)
-            encoder_out = model.encoder.reorder_encoder_out(encoder_out, length_beam_order)
-            prev_decoder_out = model.regenerate_length_beam(prev_decoder_out, self.beam_size)
+            length_beam_order = (
+                utils.new_arange(src_tokens, self.beam_size, bsz).t().reshape(-1)
+            )
+            encoder_out = model.encoder.reorder_encoder_out(
+                encoder_out, length_beam_order
+            )
+            prev_decoder_out = model.regenerate_length_beam(
+                prev_decoder_out, self.beam_size
+            )
             bsz = bsz * self.beam_size
 
         sent_idxs = torch.arange(bsz)
@@ -199,8 +215,7 @@ class IterativeRefinementGenerator(object):
                 "decoding_format": self.decoding_format,
             }
             prev_decoder_out = prev_decoder_out._replace(
-                step=step,
-                max_step=self.max_iter + 1,
+                step=step, max_step=self.max_iter + 1,
             )
 
             decoder_out = model.forward_decoder(
@@ -210,16 +225,19 @@ class IterativeRefinementGenerator(object):
             if self.adaptive:
                 # terminate if there is a loop
                 terminated, out_tokens, out_scores, out_attn = is_a_loop(
-                    prev_output_tokens, decoder_out.output_tokens, decoder_out.output_scores, decoder_out.attn
+                    prev_output_tokens,
+                    decoder_out.output_tokens,
+                    decoder_out.output_scores,
+                    decoder_out.attn,
                 )
                 decoder_out = decoder_out._replace(
-                    output_tokens=out_tokens,
-                    output_scores=out_scores,
-                    attn=out_attn,
+                    output_tokens=out_tokens, output_scores=out_scores, attn=out_attn,
                 )
 
             else:
-                terminated = decoder_out.output_tokens.new_zeros(decoder_out.output_tokens.size(0)).bool()
+                terminated = decoder_out.output_tokens.new_zeros(
+                    decoder_out.output_tokens.size(0)
+                ).bool()
 
             if step == self.max_iter:  # reach last iteration, terminate
                 terminated.fill_(1)
@@ -229,7 +247,9 @@ class IterativeRefinementGenerator(object):
             finalized_tokens = decoder_out.output_tokens[terminated]
             finalized_scores = decoder_out.output_scores[terminated]
             finalized_attn = (
-                None if (decoder_out.attn is None or decoder_out.attn.size(0) == 0) else decoder_out.attn[terminated]
+                None
+                if (decoder_out.attn is None or decoder_out.attn.size(0) == 0)
+                else decoder_out.attn[terminated]
             )
 
             if self.retain_history:
@@ -246,13 +266,11 @@ class IterativeRefinementGenerator(object):
                 ]
 
                 if self.retain_history:
-                    finalized[finalized_idxs[i]][0]['history'] = []
+                    finalized[finalized_idxs[i]][0]["history"] = []
                     for j in range(len(finalized_history_tokens)):
-                        finalized[finalized_idxs[i]][0]['history'].append(
+                        finalized[finalized_idxs[i]][0]["history"].append(
                             finalized_hypos(
-                                step,
-                                finalized_history_tokens[j][i],
-                                None, None
+                                step, finalized_history_tokens[j][i], None, None
                             )
                         )
 
@@ -272,7 +290,9 @@ class IterativeRefinementGenerator(object):
                 if decoder_out.history is not None
                 else None,
             )
-            encoder_out = model.encoder.reorder_encoder_out(encoder_out, not_terminated.nonzero().squeeze())
+            encoder_out = model.encoder.reorder_encoder_out(
+                encoder_out, not_terminated.nonzero().squeeze()
+            )
             sent_idxs = sent_idxs[not_terminated]
             prev_output_tokens = prev_decoder_out.output_tokens.clone()
 
@@ -284,38 +304,64 @@ class IterativeRefinementGenerator(object):
 
             # aggregate information from length beam
             finalized = [
-                finalized[np.argmax(
-                    [finalized[self.beam_size * i + j][0]['score'] for j in range(self.beam_size)]
-                    ) + self.beam_size * i] for i in range(len(finalized) // self.beam_size)
+                finalized[
+                    np.argmax(
+                        [
+                            finalized[self.beam_size * i + j][0]["score"]
+                            for j in range(self.beam_size)
+                        ]
+                    )
+                    + self.beam_size * i
                 ]
+                for i in range(len(finalized) // self.beam_size)
+            ]
 
         return finalized
 
     def rerank(self, reranker, finalized, encoder_input, beam_size):
-
         def rebuild_batch(finalized):
-            finalized_tokens = [f[0]['tokens'] for f in finalized]
+            finalized_tokens = [f[0]["tokens"] for f in finalized]
             finalized_maxlen = max(f.size(0) for f in finalized_tokens)
-            final_output_tokens = finalized_tokens[0].new_zeros(len(finalized_tokens), finalized_maxlen).fill_(self.pad)
+            final_output_tokens = (
+                finalized_tokens[0]
+                .new_zeros(len(finalized_tokens), finalized_maxlen)
+                .fill_(self.pad)
+            )
             for i, f in enumerate(finalized_tokens):
-                final_output_tokens[i, :f.size(0)] = f
+                final_output_tokens[i, : f.size(0)] = f
             return final_output_tokens
 
         final_output_tokens = rebuild_batch(finalized)
-        final_output_tokens[:, 0] = self.eos  # autoregressive model assumes starting with EOS
+        final_output_tokens[
+            :, 0
+        ] = self.eos  # autoregressive model assumes starting with EOS
 
         reranker_encoder_out = reranker.encoder(*encoder_input)
-        length_beam_order = utils.new_arange(
-            final_output_tokens, beam_size, reranker_encoder_out.encoder_out.size(1)).t().reshape(-1)
-        reranker_encoder_out = reranker.encoder.reorder_encoder_out(reranker_encoder_out, length_beam_order)
+        length_beam_order = (
+            utils.new_arange(
+                final_output_tokens, beam_size, reranker_encoder_out.encoder_out.size(1)
+            )
+            .t()
+            .reshape(-1)
+        )
+        reranker_encoder_out = reranker.encoder.reorder_encoder_out(
+            reranker_encoder_out, length_beam_order
+        )
         reranking_scores = reranker.get_normalized_probs(
-            reranker.decoder(final_output_tokens[:, :-1], reranker_encoder_out), True, None)
+            reranker.decoder(final_output_tokens[:, :-1], reranker_encoder_out),
+            True,
+            None,
+        )
         reranking_scores = reranking_scores.gather(2, final_output_tokens[:, 1:, None])
         reranking_masks = final_output_tokens[:, 1:].ne(self.pad)
-        reranking_scores = reranking_scores[:, :, 0].masked_fill_(~reranking_masks, 0).sum(1)
-        reranking_scores = reranking_scores / reranking_masks.sum(1).type_as(reranking_scores)
+        reranking_scores = (
+            reranking_scores[:, :, 0].masked_fill_(~reranking_masks, 0).sum(1)
+        )
+        reranking_scores = reranking_scores / reranking_masks.sum(1).type_as(
+            reranking_scores
+        )
 
         for i in range(len(finalized)):
-            finalized[i][0]['score'] = reranking_scores[i]
+            finalized[i][0]["score"] = reranking_scores[i]
 
         return finalized

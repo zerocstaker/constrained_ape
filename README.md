@@ -1,6 +1,6 @@
 # Constrained APE
 
-A fork from fairseq
+A fork from fairseq. Please see Fairseq how to install.
 
 ## Things added
 - **fairseq/data/ape_dataset.py**: based on LanguagePairDataset. Added support for mt, term, and others
@@ -16,6 +16,21 @@ A fork from fairseq
 - **fairseq/models/multisource_transformer.py**: Transformer with MultisourceEncoder
   - Parameters:
     - **--share-encoder**: Using the same encoder for src_encoder and mt_encoder
+
+
+## Dataset creation
+
+1. Download the APE dataset from the official WMT website ([PBMT](https://www.statmt.org/wmt18/ape-task.html), [NMT](http://www.statmt.org/wmt19/ape-task.html)). Artifical dataset and eSCAPE can be downloaded there as well
+2. Using Moses, learn and apply truecasing, and tokenize
+3. Learn BPE with subword-nmt and apply to the dataset
+4. Binarize the files using Fairseq's preprocess command. The directory should contain files with the following suffixes: *src*, *mt*, *pe* for the standard APE task. For terminologies, files with the names *term*, *src_append*, *src_append_embed*, *src_replace*, *src_replace_embed* are expected
+
+### Terminology Dataset
+1. Extract English Wiktionary using [WikiExtractor](https://github.com/attardi/wikiextractor)
+2. Use $FILE$ to extract terminology pair
+3. Alternatively, our terminonology is provided in the directory *terms*. Each file is separated by tabs. For each line, if a terminology match is found, each terminology pair consists of four entries (source word, source word index, target word, target word index).
+
+
 
 ## Examples to run the Models
 
